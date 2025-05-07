@@ -17,6 +17,7 @@ interface ImageMeta {
   chunks: number;
   uploadedAt: number;
   md5: string; // Add MD5 hash to metadata
+  completed: boolean; // Add completion flag
 }
 
 // Function to calculate MD5 hash of a Uint8Array
@@ -54,11 +55,57 @@ async function uploadHandler(request: Request): Promise<Response> {
         const existingImageEntry = await kv.get<string>(["md5_to_id", md5Hash]);
 
         if (existingImageEntry.value) {
-          // Image already exists, return existing URL
+          // MD5 exists, check if the image is completed
           const existingImageId = existingImageEntry.value;
-          const imageUrl = `${origin}/image/${existingImageId}`;
-          console.log(`File ${file.name} (MD5: ${md5Hash}) already exists. Returning existing URL.`);
-          results.push({ name: file.name, url: imageUrl, status: "cached" });
+          const existingMetaEntry = await kv.get<ImageMeta>(["images", existingImageId, "meta"]);
+
+          if (existingMetaEntry.value && existingMetaEntry.value.completed) {
+            // Image is completed, return existing URL
+            const imageUrl = `${origin}/image/${existingImageId}`;
+            console.log(`File ${file.name} (MD5: ${md5Hash}) already exists and is completed. Returning existing URL.`);
+            results.push({ name: file.name, url: imageUrl, status: "cached" });
+          } else {
+            // Image exists but is not completed, or metadata is missing.
+            // Proceed with storing the new upload, potentially overwriting incomplete data.
+            console.log(`File ${file.name} (MD5: ${md5Hash}) exists but is not completed. Overwriting.`);
+            const imageId = existingImageId; // Use the existing ID
+
+            const imageMeta: ImageMeta = {
+              name: file.name,
+              type: file.type,
+              size: imageBytes.byteLength,
+              chunks: Math.ceil(imageBytes.byteLength / KV_CHUNK_SIZE),
+              uploadedAt: Date.now(),
+              md5: md5Hash, // Store MD5 hash in metadata
+              completed: false, // Initialize completion flag to false
+            };
+
+            const kvOperations = kv.atomic();
+
+            // Store metadata (will overwrite if exists)
+            kvOperations.set(["images", imageId, "meta"], imageMeta);
+
+            // MD5 to ID mapping already exists, no need to set again in atomic op
+
+            await kvOperations.commit();
+
+            // Store chunks individually (will overwrite if exists)
+            for (let i = 0; i < imageMeta.chunks; i++) {
+              const start = i * KV_CHUNK_SIZE;
+              const end = Math.min(start + KV_CHUNK_SIZE, imageBytes.byteLength);
+              const chunk = imageBytes.slice(start, end);
+              await kv.set(["images", imageId, "chunk", i], chunk);
+            }
+
+            // Mark image as completed after all chunks are stored
+            await kv.set(["images", imageId, "meta"], { ...imageMeta, completed: true });
+
+            // Extract file extension from original name
+            const fileNameParts = file.name.split('.');
+            const fileExtension = fileNameParts.length > 1 ? fileNameParts.pop() : '';
+            const imageUrl = `${origin}/image/${imageId}${fileExtension ? '.' + fileExtension : ''}`;
+            results.push({ name: file.name, url: imageUrl, status: "overwritten" });
+          }
         } else {
           // Image does not exist, store it
           const imageId = crypto.randomUUID();
@@ -69,6 +116,7 @@ async function uploadHandler(request: Request): Promise<Response> {
             chunks: Math.ceil(imageBytes.byteLength / KV_CHUNK_SIZE),
             uploadedAt: Date.now(),
             md5: md5Hash, // Store MD5 hash in metadata
+            completed: false, // Initialize completion flag to false
           };
 
           const kvOperations = kv.atomic();
@@ -76,18 +124,21 @@ async function uploadHandler(request: Request): Promise<Response> {
           // Store metadata
           kvOperations.set(["images", imageId, "meta"], imageMeta);
 
-          // Store chunks
-          for (let i = 0; i < imageMeta.chunks; i++) {
-            const start = i * KV_CHUNK_SIZE;
-            const end = Math.min(start + KV_CHUNK_SIZE, imageBytes.byteLength);
-            const chunk = imageBytes.slice(start, end);
-            kvOperations.set(["images", imageId, "chunk", i], chunk);
-          }
-
           // Store MD5 to ID mapping
           kvOperations.set(["md5_to_id", md5Hash], imageId);
 
           await kvOperations.commit();
+
+          // Store chunks individually
+          for (let i = 0; i < imageMeta.chunks; i++) {
+            const start = i * KV_CHUNK_SIZE;
+            const end = Math.min(start + KV_CHUNK_SIZE, imageBytes.byteLength);
+            const chunk = imageBytes.slice(start, end);
+            await kv.set(["images", imageId, "chunk", i], chunk);
+          }
+
+          // Mark image as completed after all chunks are stored
+          await kv.set(["images", imageId, "meta"], { ...imageMeta, completed: true });
 
           // Extract file extension from original name
           const fileNameParts = file.name.split('.');
@@ -131,8 +182,8 @@ async function serveImage(request: Request, imageId: string): Promise<Response> 
     }
 
     const metaEntry = await kv.get<ImageMeta>(["images", imageId, "meta"]);
-    if (!metaEntry.value) {
-      return new Response("Image not found", { status: 404 });
+    if (!metaEntry.value || !metaEntry.value.completed) {
+      return new Response("Image not found or not yet completed", { status: 404 });
     }
 
     const imageMeta = metaEntry.value;

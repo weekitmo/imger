@@ -70,6 +70,8 @@
             z-index: 1;
             border-radius: var(--pico-border-radius);
             padding: 5px 0;
+            bottom: 100%; /* Position above the button */
+            left: 0; /* Align to the left */
         }
         .dropdown-content a {
             color: black;
@@ -151,6 +153,8 @@
                 position: static; /* Remove absolute positioning on mobile */
                 box-shadow: none;
                 min-width: auto;
+                bottom: auto; /* Reset bottom on mobile */
+                left: auto; /* Reset left on mobile */
             }
         }
     </style>
@@ -166,7 +170,7 @@
             <form id="uploadForm" enctype="multipart/form-data">
                 <div id="drop-area">
                     <input type="file" id="fileElem" multiple accept="image/*">
-                    <label class="button" for="fileElem">Select or Drag & Drop Files Here</label>
+                    <p>Select or Drag & Drop Files Here</p>
                     <p>or drag and drop multiple files</p>
                 </div>
                 <progress id="progress-bar" value="0" max="100" style="width: 100%; display: none;"></progress>
@@ -238,6 +242,11 @@
 
     // Handle file selection via input
     fileElem.addEventListener('change', handleFiles, false);
+
+    // Make the entire drop area clickable
+    dropArea.addEventListener('click', () => {
+        fileElem.click();
+    });
 
     function preventDefaults(e) {
         e.preventDefault();
