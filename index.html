@@ -248,6 +248,35 @@
         fileElem.click();
     });
 
+    // Handle pasted images
+    document.addEventListener('paste', handlePaste, false);
+
+    function handlePaste(e) {
+        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+        let foundImage = false;
+        for (let i = 0; i < items.length; i++) {
+            if (items[i].type.indexOf('image') !== -1) {
+                const blob = items[i].getAsFile();
+                if (blob) {
+                    const timestamp = new Date().getTime();
+                    const file = new File([blob], `pasted_image_${timestamp}.${blob.type.split('/')[1] || 'png'}`, { type: blob.type });
+                    filesToUpload.push(file);
+                    foundImage = true;
+                }
+            }
+        }
+        if (foundImage) {
+            displayFiles();
+            uploadButton.disabled = filesToUpload.length === 0;
+            // Optionally, scroll to the file list or provide some visual feedback
+            console.log('Image(s) pasted and added to upload list.');
+        }
+        // If an image was pasted, we likely don't want the browser's default paste action
+        if (foundImage) {
+            e.preventDefault();
+        }
+    }
+
     function preventDefaults(e) {
         e.preventDefault();
         e.stopPropagation();
